@@ -1,9 +1,11 @@
 //! Router unit tests for the object model contracts.
 
 use super::*;
+use crate::browse::FileContent;
 use crate::captures::{Capture, Captures, FromCaptures};
 use crate::cx::Cx;
 use crate::error::{ProviderError, ProviderErrorKind, Result};
+use crate::file_attrs::Stability;
 use crate::handler::DirCx;
 use crate::identity::{Facet, IdentityCaptures, LogicalId};
 use crate::object::{Canonical, Key, Load, Object, ObjectKind, ObjectShape};
@@ -37,6 +39,20 @@ impl Object for DemoObj {
 impl Representable<Markdown> for DemoObj {
     fn represent(&self) -> Vec<u8> {
         format!("# {}", self.title).into_bytes()
+    }
+}
+
+impl DemoObj {
+    fn title(&self) -> Result<FileContent> {
+        Ok(FileContent::new(self.title.clone()))
+    }
+
+    fn body(&self) -> Result<FileContent> {
+        Ok(FileContent::new(format!("body: {}", self.title)))
+    }
+
+    fn state(&self) -> Result<FileContent> {
+        Ok(FileContent::new("open"))
     }
 }
 
@@ -286,6 +302,43 @@ fn object_listing_includes_top_level_handler_leaves_only() {
     );
     assert_eq!(mounted.handler_files.len(), 2);
     assert_eq!(mounted.handler_dirs.len(), 1);
+}
+
+#[test]
+fn projected_leaf_modifiers_apply_to_pending_leaf() {
+    let handle = object("/items/{id}", |o| {
+        o.representations("item", (Markdown,))?;
+        o.file("title").project(DemoObj::title)?;
+        o.file("body").lazy().project(DemoObj::body)?;
+        o.file("state").immutable().project(DemoObj::state)?;
+        Ok(())
+    })
+    .unwrap();
+
+    let projected: Vec<(&str, bool, Stability)> = handle
+        .spec
+        .leaves
+        .iter()
+        .filter_map(|leaf| match leaf {
+            super::object::ObjectLeaf::Projected {
+                leaf_name,
+                lazy,
+                stability,
+                ..
+            } => Some((leaf_name.as_str(), *lazy, *stability)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        projected,
+        vec![
+            ("title", false, Stability::Mutable),
+            ("body", true, Stability::Mutable),
+            ("state", false, Stability::Immutable),
+        ],
+        "file leaf modifiers must apply to the pending leaf, not the prior projection"
+    );
 }
 
 #[test]
